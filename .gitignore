@@ -1,4 +1,4 @@
 turnstile.db
-turnstile
+/turnstile
 *.db-shm
 *.db-wal

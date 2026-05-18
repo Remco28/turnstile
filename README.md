@@ -25,9 +25,27 @@ Turnstile exists to make access management conversational and centralized instea
 - HTTP `/v1/validate` endpoint
 - SQLite-backed storage
 - token revocation + expiry
+- token reissue / rotation (`reissue-token`)
 - scoped grant replacement (`replace-grants`)
 - project access inspection (`who-has-access`)
 - access audit logging (`access-log`)
+
+## Admin model
+
+Current v1 answer: **admin is whoever has trusted access to the machine / database path.**
+
+There is no separate in-app admin account system yet. Administrative power comes from the OS and deployment boundary:
+
+- whoever can run the Turnstile CLI can create/reissue/revoke tokens
+- whoever can read/write the SQLite file effectively controls the system
+- the HTTP server is for validation only; admin operations stay CLI-only
+
+So yes — for now the security model is basically:
+- local machine access
+- filesystem permissions
+- SSH / Tailscale / host hardening
+
+That is acceptable for a personal self-hosted tool **as long as** Turnstile is treated like other sensitive local infrastructure. If later needed, the next layer should be small and boring (for example: keep admin commands local-only, run under a dedicated Unix user, lock down DB file permissions, and avoid exposing any admin API over the network).
 
 ## Quick start
 

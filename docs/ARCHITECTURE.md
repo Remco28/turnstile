@@ -71,6 +71,8 @@ Operator -> revoke-token
 - **Presented credential**: bearer token via `X-API-Key`, `Authorization: Bearer`, or JSON body.
 - **Authorization decision**: token must be active and mapped to the requested project.
 - **Trust boundary**: server binds to localhost/Tailscale-facing address by config; apps keep only the raw token secret.
+- **Admin model in v1**: there is no separate app-level admin identity. Admin power is whoever can run the CLI or read/write the DB on the trusted machine.
+- **Operational rule**: keep admin actions local/SSH-only; do not expose token issuance or revocation as a public HTTP API.
 - **Deliberate v1 tradeoff**: tokens are stored plaintext so Frank/agents can retrieve and re-send them when needed.
 
 ## Configuration

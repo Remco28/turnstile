@@ -213,7 +213,7 @@ func (s *Store) ListProjects() ([]models.Project, error) {
 
 func (s *Store) ListTokens(userName string) ([]models.TokenRecord, error) {
 	base := `
-SELECT t.id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at,
+SELECT t.id, t.user_id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at,
        COALESCE(GROUP_CONCAT(p.slug, ','), '')
 FROM tokens t
 JOIN users u ON u.id = t.user_id
@@ -225,7 +225,7 @@ LEFT JOIN projects p ON p.id = tp.project_id`
 		where = ` WHERE u.name = ?`
 		args = append(args, normalized)
 	}
-	query := base + where + ` GROUP BY t.id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at ORDER BY t.id`
+	query := base + where + ` GROUP BY t.id, t.user_id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at ORDER BY t.id`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -244,14 +244,14 @@ LEFT JOIN projects p ON p.id = tp.project_id`
 
 func (s *Store) GetToken(id int64) (models.TokenRecord, error) {
 	row := s.db.QueryRow(`
-SELECT t.id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at,
+SELECT t.id, t.user_id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at,
        COALESCE(GROUP_CONCAT(p.slug, ','), '')
 FROM tokens t
 JOIN users u ON u.id = t.user_id
 LEFT JOIN token_projects tp ON tp.token_id = t.id
 LEFT JOIN projects p ON p.id = tp.project_id
 WHERE t.id = ?
-GROUP BY t.id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at`, id)
+GROUP BY t.id, t.user_id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_at, t.last_used_at`, id)
 	return scanToken(row)
 }
 
@@ -283,6 +283,69 @@ func (s *Store) ReplaceTokenProjects(tokenID int64, projectSlugs []string) (mode
 		return models.TokenRecord{}, err
 	}
 	return s.GetToken(tokenID)
+}
+
+func (s *Store) ReissueToken(tokenID int64, label string, expiresAt *time.Time) (models.TokenReissueResult, error) {
+	oldRecord, err := s.GetToken(tokenID)
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	newLabel := strings.TrimSpace(label)
+	if newLabel == "" {
+		newLabel = oldRecord.Label
+	}
+	newExpiresAt := expiresAt
+	if newExpiresAt == nil {
+		newExpiresAt = oldRecord.ExpiresAt
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	defer tx.Rollback()
+
+	revokedAt := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(`UPDATE tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`, revokedAt, tokenID); err != nil {
+		return models.TokenReissueResult{}, err
+	}
+
+	raw, err := turnstileToken.New()
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	createdAt := time.Now().UTC()
+	var expires any
+	if newExpiresAt != nil {
+		expires = newExpiresAt.UTC().Format(time.RFC3339)
+	}
+	result, err := tx.Exec(`INSERT INTO tokens(user_id, token, label, created_at, expires_at) VALUES(?, ?, ?, ?, ?)`, oldRecord.UserID, raw, newLabel, createdAt.Format(time.RFC3339), expires)
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	newTokenID, _ := result.LastInsertId()
+	for _, project := range oldRecord.Projects {
+		projectID, err := lookupProjectID(tx, project)
+		if err != nil {
+			return models.TokenReissueResult{}, err
+		}
+		if _, err := tx.Exec(`INSERT INTO token_projects(token_id, project_id, created_at) VALUES(?, ?, ?)`, newTokenID, projectID, createdAt.Format(time.RFC3339)); err != nil {
+			return models.TokenReissueResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return models.TokenReissueResult{}, err
+	}
+
+	revokedRecord, err := s.GetToken(tokenID)
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	newRecord, err := s.GetToken(newTokenID)
+	if err != nil {
+		return models.TokenReissueResult{}, err
+	}
+	return models.TokenReissueResult{Old: revokedRecord, New: newRecord}, nil
 }
 
 func (s *Store) ListProjectAccess(projectSlug string) ([]models.ProjectAccess, error) {
@@ -488,7 +551,7 @@ func scanToken(scanner tokenScanner) (models.TokenRecord, error) {
 	var created string
 	var expiresRaw, revokedRaw, lastUsedRaw sql.NullString
 	var projectsCSV string
-	if err := scanner.Scan(&record.ID, &record.User, &record.Token, &record.Label, &created, &expiresRaw, &revokedRaw, &lastUsedRaw, &projectsCSV); err != nil {
+	if err := scanner.Scan(&record.ID, &record.UserID, &record.User, &record.Token, &record.Label, &created, &expiresRaw, &revokedRaw, &lastUsedRaw, &projectsCSV); err != nil {
 		return models.TokenRecord{}, err
 	}
 	record.CreatedAt, _ = time.Parse(time.RFC3339, created)
