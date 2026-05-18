@@ -25,7 +25,9 @@ Turnstile exists to make access management conversational and centralized instea
 - HTTP `/v1/validate` endpoint
 - SQLite-backed storage
 - token revocation + expiry
-- access audit logging
+- scoped grant replacement (`replace-grants`)
+- project access inspection (`who-has-access`)
+- access audit logging (`access-log`)
 
 ## Quick start
 
@@ -33,6 +35,8 @@ Turnstile exists to make access management conversational and centralized instea
 go run ./cmd/turnstile create-user frank
 go run ./cmd/turnstile create-project notesmith --description "AI writing app"
 go run ./cmd/turnstile create-token --user frank --project notesmith --label "frank local"
+go run ./cmd/turnstile who-has-access --project notesmith
+go run ./cmd/turnstile access-log --limit 20
 go run ./cmd/turnstile serve
 ```
 

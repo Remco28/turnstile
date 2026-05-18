@@ -255,6 +255,115 @@ GROUP BY t.id, u.name, t.token, t.label, t.created_at, t.expires_at, t.revoked_a
 	return scanToken(row)
 }
 
+func (s *Store) ReplaceTokenProjects(tokenID int64, projectSlugs []string) (models.TokenRecord, error) {
+	projects := uniqueNormalized(projectSlugs)
+	if len(projects) == 0 {
+		return models.TokenRecord{}, errors.New("at least one project is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return models.TokenRecord{}, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM token_projects WHERE token_id = ?`, tokenID); err != nil {
+		return models.TokenRecord{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, project := range projects {
+		projectID, err := lookupProjectID(tx, project)
+		if err != nil {
+			return models.TokenRecord{}, err
+		}
+		if _, err := tx.Exec(`INSERT INTO token_projects(token_id, project_id, created_at) VALUES(?, ?, ?)`, tokenID, projectID, now); err != nil {
+			return models.TokenRecord{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return models.TokenRecord{}, err
+	}
+	return s.GetToken(tokenID)
+}
+
+func (s *Store) ListProjectAccess(projectSlug string) ([]models.ProjectAccess, error) {
+	projectSlug = normalizeSlug(projectSlug)
+	if projectSlug == "" {
+		return nil, errors.New("project slug is required")
+	}
+	rows, err := s.db.Query(`
+SELECT p.slug, t.id, u.name, t.label, t.revoked_at, t.expires_at, t.last_used_at
+FROM token_projects tp
+JOIN tokens t ON t.id = tp.token_id
+JOIN users u ON u.id = t.user_id
+JOIN projects p ON p.id = tp.project_id
+WHERE p.slug = ?
+ORDER BY u.name, t.id`, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []models.ProjectAccess{}
+	for rows.Next() {
+		var item models.ProjectAccess
+		var revokedRaw, expiresRaw, lastUsedRaw sql.NullString
+		if err := rows.Scan(&item.Project, &item.TokenID, &item.User, &item.Label, &revokedRaw, &expiresRaw, &lastUsedRaw); err != nil {
+			return nil, err
+		}
+		item.RevokedAt = parseNullableTime(revokedRaw)
+		item.ExpiresAt = parseNullableTime(expiresRaw)
+		item.LastUsedAt = parseNullableTime(lastUsedRaw)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ListAccessLog(projectSlug string, limit int) ([]models.AccessLogEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []any{}
+	where := ""
+	if normalized := normalizeSlug(projectSlug); normalized != "" {
+		where = ` WHERE p.slug = ?`
+		args = append(args, normalized)
+	}
+	args = append(args, limit)
+	rows, err := s.db.Query(`
+SELECT al.id,
+       COALESCE(al.token_id, 0),
+       COALESCE(u.name, ''),
+       COALESCE(p.slug, ''),
+       al.presented_token_prefix,
+       al.authorized,
+       al.reason,
+       al.remote_addr,
+       al.user_agent,
+       al.created_at
+FROM access_log al
+LEFT JOIN tokens t ON t.id = al.token_id
+LEFT JOIN users u ON u.id = t.user_id
+LEFT JOIN projects p ON p.id = al.project_id`+where+`
+ORDER BY al.id DESC
+LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []models.AccessLogEntry{}
+	for rows.Next() {
+		var item models.AccessLogEntry
+		var authorizedInt int
+		var created string
+		if err := rows.Scan(&item.ID, &item.TokenID, &item.User, &item.Project, &item.PresentedTokenPrefix, &authorizedInt, &item.Reason, &item.RemoteAddr, &item.UserAgent, &created); err != nil {
+			return nil, err
+		}
+		item.Authorized = authorizedInt == 1
+		item.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) RevokeToken(id int64) (models.TokenRecord, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.Exec(`UPDATE tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?`, now, id)
@@ -415,6 +524,17 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func parseNullableTime(value sql.NullString) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value.String)
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 func uniqueNormalized(values []string) []string {

@@ -36,3 +36,26 @@ type ValidationResult struct {
 	TokenID    int64      `json:"token_id,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
+
+type ProjectAccess struct {
+	Project    string     `json:"project"`
+	TokenID    int64      `json:"token_id"`
+	User       string     `json:"user"`
+	Label      string     `json:"label,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+type AccessLogEntry struct {
+	ID                   int64     `json:"id"`
+	TokenID              int64     `json:"token_id,omitempty"`
+	User                 string    `json:"user,omitempty"`
+	Project              string    `json:"project,omitempty"`
+	PresentedTokenPrefix string    `json:"presented_token_prefix"`
+	Authorized           bool      `json:"authorized"`
+	Reason               string    `json:"reason,omitempty"`
+	RemoteAddr           string    `json:"remote_addr,omitempty"`
+	UserAgent            string    `json:"user_agent,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+}
